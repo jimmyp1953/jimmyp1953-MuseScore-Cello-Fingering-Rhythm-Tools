@@ -1,8 +1,3 @@
-Short answer: almost—but not completely.
-The previous README was strong, but it was missing explicit sections for help and maintainers, and the “usefulness” wasn’t clearly called out as its own section.
-
-Here’s a fully compliant, polished README that clearly covers all five GitHub expectations:
-
 🎻 MuseScore Cello Fingering & Rhythm Tools
 
 Reduce tedious fingering entry. Get practical starting points. Improve rhythm awareness.
