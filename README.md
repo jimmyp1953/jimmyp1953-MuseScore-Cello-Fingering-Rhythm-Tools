@@ -69,7 +69,7 @@ You can also discuss usage on the MuseScore forums.
 
 Maintained by:
 
-Jim Phelps (Plyoscience LLC)
+Jim Phelps (Persistent cello student)
 
 Contributions are welcome.
 If you have:
