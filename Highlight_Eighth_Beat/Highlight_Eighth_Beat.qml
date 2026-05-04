@@ -1,48 +1,88 @@
 import MuseScore 3.0
 import QtQuick 2.0
 
-
 MuseScore {
-    version: "5.0"
-    description: "Highlights note attacks on the correct beat grid for simple and compound meters."
-    menuPath: "Plugins.Notes.Highlight Beat Attacks Adaptive"
+    version: "5.2"
+    description: "Highlights note attacks that coincide with an 8-click metronome grid per measure, with 6/8 support."
+    menuPath: "Plugins.Notes.Highlight 8 Ticks Per Measure"
 
     property string attackColor: "#ff0000"
     property string defaultColor: "#000000"
     property bool resetOnly: false
 
+    // Default behavior:
+    // - Simple meters such as 4/4 and 3/4: 8 equal clicks per measure.
+    // - Compound 6/8: 6 eighth-note clicks per measure, because that matches the written 6/8 pulse grid.
+    property bool useWrittenEighthGridForCompoundMeters: true
+    property int simpleMeterClicksPerMeasure: 8
+    property int compoundEighthDenominatorClicksPerMeasure: 6
+    property int gridToleranceTicks: 3
+
     function isTiedContinuation(note) {
         return note.tieBack !== null && note.tieBack !== undefined;
     }
 
-    function beatUnitTicksForMeasure(measure) {
-        var numerator = measure.timesigActual.numerator;
-        var denominator = measure.timesigActual.denominator;
+    function buildMeasureMap(score) {
+        var map = {};
+        var cursor = score.newCursor();
 
-        // Compound meters: 6/8, 9/8, 12/8, etc.
-        // Main beat is dotted quarter = 3 eighths = 1.5 quarters.
-        if (denominator === 8 && numerator >= 6 && numerator % 3 === 0) {
-            return division * 3 / 2;
+        cursor.rewind(Cursor.SCORE_START);
+
+        while (cursor.measure) {
+            var m = cursor.measure;
+            var tick = m.firstSegment.tick;
+            var numerator = m.timesigActual.numerator;
+            var denominator = m.timesigActual.denominator;
+            var measureTicks = numerator * division * 4.0 / denominator;
+            var clicksPerMeasure = simpleMeterClicksPerMeasure;
+
+            // 6/8, 9/8, 12/8 are compound meters. For the purpose of this practice tool,
+            // use the written eighth-note pulse grid instead of forcing 8 equal divisions.
+            // In 6/8 this gives 6 grid locations: 1 2 3 4 5 6.
+            if (useWrittenEighthGridForCompoundMeters && denominator === 8 && numerator >= 6 && numerator % 3 === 0) {
+                clicksPerMeasure = numerator;
+            }
+
+            map[tick] = {
+                "tick": tick,
+                "past": tick + measureTicks,
+                "clicks": clicksPerMeasure,
+                "gridStep": Math.round(measureTicks / clicksPerMeasure)
+            };
+
+            cursor.nextMeasure();
         }
 
-        // Simple meters: 2/4, 3/4, 4/4, etc.
-        // Main beat is denominator note.
-        return division * 4 / denominator;
+        return map;
     }
 
-    function isBeatPosition(cursor) {
-        if (!cursor.measure) return false;
+    function isCloseToGrid(localTick, gridStep) {
+        var remainder = localTick % gridStep;
+        return remainder <= gridToleranceTicks || Math.abs(remainder - gridStep) <= gridToleranceTicks;
+    }
 
-        var beatTicks = beatUnitTicksForMeasure(cursor.measure);
-        var measureStartTick = cursor.measure.firstSegment.tick;
-        var localTick = cursor.tick - measureStartTick;
+    function isEightTickGridPosition(cursor, measureMap) {
+        if (!cursor.measure || !cursor.segment) return false;
 
-        return localTick >= 0 && (localTick % beatTicks) === 0;
+        var measureKey = cursor.measure.firstSegment.tick;
+        var m = measureMap[measureKey];
+
+        if (!m) return false;
+
+        var t = cursor.segment.tick;
+
+        if (t < m.tick || t >= m.past) return false;
+
+        var localTick = t - m.tick;
+
+        return localTick >= 0 && isCloseToGrid(localTick, m.gridStep);
     }
 
     function clearNote(note) {
         note.color = defaultColor;
+
         if (note.accidental) note.accidental.color = defaultColor;
+
         if (note.dots) {
             for (var i = 0; i < note.dots.length; i++) {
                 if (note.dots[i]) note.dots[i].color = defaultColor;
@@ -52,7 +92,9 @@ MuseScore {
 
     function colorNote(note) {
         note.color = attackColor;
+
         if (note.accidental) note.accidental.color = attackColor;
+
         if (note.dots) {
             for (var i = 0; i < note.dots.length; i++) {
                 if (note.dots[i]) note.dots[i].color = attackColor;
@@ -68,37 +110,71 @@ MuseScore {
 
     function colorChordAttacks(chord) {
         for (var i = 0; i < chord.notes.length; i++) {
-            var note = chord.notes[i];
-
-            if (!isTiedContinuation(note)) {
-                colorNote(note);
+            if (!isTiedContinuation(chord.notes[i])) {
+                colorNote(chord.notes[i]);
             }
         }
     }
 
-    function getEndTick() {
-        var c = curScore.newCursor();
+    function getSelectionRange() {
+        var cursor = curScore.newCursor();
+        var range = {
+            "fullScore": false,
+            "startStaff": 0,
+            "endStaff": curScore.nstaves - 1,
+            "endTick": curScore.lastSegment.tick + 1,
+            "rewindMode": Cursor.SCORE_START
+        };
 
-        c.rewind(Cursor.SELECTION_START);
-
-        if (!c.segment) {
-            return curScore.lastSegment.tick + 1;
-        }
-
-        c.rewind(Cursor.SELECTION_END);
-
-        if (c.tick === 0) {
-            return curScore.lastSegment.tick + 1;
-        }
-
-        return c.tick;
-    }
-
-    function rewindToStart(cursor) {
         cursor.rewind(Cursor.SELECTION_START);
 
         if (!cursor.segment) {
-            cursor.rewind(Cursor.SCORE_START);
+            range.fullScore = true;
+            range.rewindMode = Cursor.SCORE_START;
+            return range;
+        }
+
+        range.startStaff = cursor.staffIdx;
+        cursor.rewind(Cursor.SELECTION_END);
+        range.endStaff = cursor.staffIdx;
+        range.endTick = cursor.tick === 0 ? curScore.lastSegment.tick + 1 : cursor.tick;
+        range.rewindMode = Cursor.SELECTION_START;
+
+        return range;
+    }
+
+    function applyToSelectionOrScore(callback, measureMap) {
+        var range = getSelectionRange();
+        var cursor = curScore.newCursor();
+
+        for (var staff = range.startStaff; staff <= range.endStaff; staff++) {
+            for (var voice = 0; voice < 4; voice++) {
+                cursor.staffIdx = staff;
+                cursor.voice = voice;
+                cursor.rewind(range.rewindMode);
+
+                // Important: MuseScore may reset staff/voice on rewind.
+                cursor.staffIdx = staff;
+                cursor.voice = voice;
+
+                while (cursor.segment && (range.fullScore || cursor.tick < range.endTick)) {
+                    if (cursor.element && cursor.element.type == Element.CHORD) {
+                        callback(cursor, measureMap);
+                    }
+
+                    cursor.next();
+                }
+            }
+        }
+    }
+
+    function clearExistingHighlight(cursor, measureMap) {
+        clearChord(cursor.element);
+    }
+
+    function applyEightTickHighlight(cursor, measureMap) {
+        if (isEightTickGridPosition(cursor, measureMap)) {
+            colorChordAttacks(cursor.element);
         }
     }
 
@@ -108,38 +184,14 @@ MuseScore {
             return;
         }
 
-        var endTick = getEndTick();
+        var measureMap = buildMeasureMap(curScore);
 
         curScore.startCmd();
 
-        for (var track = 0; track < curScore.ntracks; track++) {
-            var clearCursor = curScore.newCursor();
-            clearCursor.track = track;
-            rewindToStart(clearCursor);
-
-            while (clearCursor.segment && clearCursor.tick < endTick) {
-                if (clearCursor.element && clearCursor.element.type === Element.CHORD) {
-                    clearChord(clearCursor.element);
-                }
-
-                clearCursor.next();
-            }
-        }
+        applyToSelectionOrScore(clearExistingHighlight, measureMap);
 
         if (!resetOnly) {
-            for (var track2 = 0; track2 < curScore.ntracks; track2++) {
-                var cursor = curScore.newCursor();
-                cursor.track = track2;
-                rewindToStart(cursor);
-
-                while (cursor.segment && cursor.tick < endTick) {
-                    if (cursor.element && cursor.element.type === Element.CHORD && isBeatPosition(cursor)) {
-                        colorChordAttacks(cursor.element);
-                    }
-
-                    cursor.next();
-                }
-            }
+            applyToSelectionOrScore(applyEightTickHighlight, measureMap);
         }
 
         curScore.endCmd();
